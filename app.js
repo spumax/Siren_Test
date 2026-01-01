@@ -36,6 +36,11 @@ let lastDetectedFrequency = 0;  // Letzte erkannte Frequenz
 let lastSimilarity = 0;         // Letzte Ähnlichkeit
 let isHolding = false;          // Aktuell im Hold-Modus?
 
+// Bestätigungsphase: Hold erst nach 1000ms kontinuierlicher Erkennung
+let continuousDetectionStart = 0;  // Wann begann die aktuelle Erkennung?
+let isConfirmed = false;           // Wurde die Sirene bestätigt (≥1000ms)?
+const CONFIRMATION_TIME = 1000;    // Zeit in ms für Bestätigung
+
 // DOM Elemente
 const startBtn = document.getElementById('startBtn');
 const learnBtn = document.getElementById('learnBtn');
@@ -418,13 +423,15 @@ function matchHarmonics(currentHarmonics, magnitude) {
 function updateDetection(frequency, magnitude, match, harmonics) {
     const now = Date.now();
     
+    // Hilfsfunktion: Hold nur wenn bestätigt
+    const canUseHold = () => isConfirmed && lastDetectionTime > 0;
+    
     // Fall 1: Signal zu schwach
     if (magnitude < minMagnitude) {
-        // Prüfe Hold-Zeit
         const timeSinceLastDetection = now - lastDetectionTime;
         
-        if (lastDetectionTime > 0 && timeSinceLastDetection < CONFIG.holdTime) {
-            // Hold-Modus: Letzten Wert beibehalten
+        // Hold nur wenn Sirene vorher bestätigt war (≥1000ms erkannt)
+        if (canUseHold() && timeSinceLastDetection < CONFIG.holdTime) {
             isHolding = true;
             frequencyValue.textContent = Math.round(lastDetectedFrequency);
             detectionStatus.textContent = `⏸ HOLD (${Math.round(lastSimilarity)}%)`;
@@ -432,9 +439,8 @@ function updateDetection(frequency, magnitude, match, harmonics) {
             return;
         }
         
-        // Hold-Zeit abgelaufen
-        isHolding = false;
-        lastDetectionTime = 0;
+        // Kein Hold oder Hold-Zeit abgelaufen → Reset
+        resetDetectionState();
         frequencyValue.textContent = '---';
         detectionStatus.textContent = 'Signal zu schwach';
         detectionStatus.className = 'detection-status';
@@ -443,35 +449,62 @@ function updateDetection(frequency, magnitude, match, harmonics) {
     
     // Fall 2: Sirene erkannt
     if (match.matched) {
+        // Kontinuierliche Erkennung tracken
+        if (continuousDetectionStart === 0) {
+            // Neue Erkennung beginnt
+            continuousDetectionStart = now;
+            isConfirmed = false;
+        }
+        
+        // Prüfe ob Bestätigungszeit erreicht
+        const continuousDuration = now - continuousDetectionStart;
+        if (continuousDuration >= CONFIRMATION_TIME) {
+            isConfirmed = true;
+        }
+        
         lastDetectionTime = now;
         lastDetectedFrequency = frequency;
         lastSimilarity = match.similarity;
         isHolding = false;
         
         frequencyValue.textContent = Math.round(frequency);
-        detectionStatus.textContent = `✓ SIRENE (${match.similarity.toFixed(0)}%)`;
+        
+        if (isConfirmed) {
+            detectionStatus.textContent = `✓ SIRENE (${match.similarity.toFixed(0)}%)`;
+            log(`BESTÄTIGT! ${Math.round(frequency)} Hz | ${match.similarity.toFixed(1)}%`);
+        } else {
+            // Noch in Bestätigungsphase
+            const remaining = Math.ceil((CONFIRMATION_TIME - continuousDuration) / 100) / 10;
+            detectionStatus.textContent = `⏳ Prüfe... (${remaining.toFixed(1)}s)`;
+        }
         detectionStatus.className = 'detection-status detected';
-        log(`MATCH! ${Math.round(frequency)} Hz | Ähnlichkeit: ${match.similarity.toFixed(1)}%`);
         return;
     }
     
     // Fall 3: Nicht erkannt, aber Signal vorhanden
     const timeSinceLastDetection = now - lastDetectionTime;
     
-    if (lastDetectionTime > 0 && timeSinceLastDetection < CONFIG.holdTime) {
-        // Hold-Modus: Letzten Wert beibehalten
+    // Hold nur wenn Sirene vorher bestätigt war
+    if (canUseHold() && timeSinceLastDetection < CONFIG.holdTime) {
         isHolding = true;
         frequencyValue.textContent = Math.round(lastDetectedFrequency);
         detectionStatus.textContent = `⏸ HOLD (${Math.round(lastSimilarity)}%)`;
         detectionStatus.className = 'detection-status detected';
     } else {
-        // Hold-Zeit abgelaufen oder nie erkannt
-        isHolding = false;
-        lastDetectionTime = 0;
+        // Kein Hold (nicht bestätigt) oder Hold-Zeit abgelaufen
+        resetDetectionState();
         frequencyValue.textContent = Math.round(frequency);
         detectionStatus.textContent = `✗ Nicht erkannt (${match.similarity.toFixed(0)}%)`;
         detectionStatus.className = 'detection-status not-detected';
     }
+}
+
+// Reset alle Erkennungs-States
+function resetDetectionState() {
+    isHolding = false;
+    isConfirmed = false;
+    continuousDetectionStart = 0;
+    lastDetectionTime = 0;
 }
 
 function updateStatus(state, text) {
