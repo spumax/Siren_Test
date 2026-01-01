@@ -1,6 +1,6 @@
 // ========================================
 // SPUMAX Sirenen-Erkennung Testprojekt
-// Version 2: Oberton-Analyse
+// Version 2.1: Oberton-Analyse + Hold-Logik
 // ========================================
 
 // Konfiguration
@@ -12,6 +12,7 @@ const CONFIG = {
     learnDuration: 5000,  // 5 Sekunden lernen
     smoothingFactor: 0.8, // Spektrum-Glättung
     numHarmonics: 5,      // Anzahl Obertöne zu analysieren (1., 2., 3., 4., 5.)
+    holdTime: 500,        // Hold-Zeit in ms (Erkennung halten bei kurzen Aussetzern)
 };
 
 // State
@@ -28,6 +29,12 @@ let animationId = null;
 // Gelernte Signatur-Daten
 let learningData = [];
 let learningStartTime = 0;
+
+// Hold-Logik: Erkennung halten bei kurzen Aussetzern
+let lastDetectionTime = 0;      // Zeitstempel der letzten erfolgreichen Erkennung
+let lastDetectedFrequency = 0;  // Letzte erkannte Frequenz
+let lastSimilarity = 0;         // Letzte Ähnlichkeit
+let isHolding = false;          // Aktuell im Hold-Modus?
 
 // DOM Elemente
 const startBtn = document.getElementById('startBtn');
@@ -409,20 +416,59 @@ function matchHarmonics(currentHarmonics, magnitude) {
 // ========================================
 
 function updateDetection(frequency, magnitude, match, harmonics) {
+    const now = Date.now();
+    
+    // Fall 1: Signal zu schwach
     if (magnitude < minMagnitude) {
+        // Prüfe Hold-Zeit
+        const timeSinceLastDetection = now - lastDetectionTime;
+        
+        if (lastDetectionTime > 0 && timeSinceLastDetection < CONFIG.holdTime) {
+            // Hold-Modus: Letzten Wert beibehalten
+            isHolding = true;
+            frequencyValue.textContent = Math.round(lastDetectedFrequency);
+            detectionStatus.textContent = `⏸ HOLD (${Math.round(lastSimilarity)}%)`;
+            detectionStatus.className = 'detection-status detected';
+            return;
+        }
+        
+        // Hold-Zeit abgelaufen
+        isHolding = false;
+        lastDetectionTime = 0;
         frequencyValue.textContent = '---';
         detectionStatus.textContent = 'Signal zu schwach';
         detectionStatus.className = 'detection-status';
         return;
     }
     
-    frequencyValue.textContent = Math.round(frequency);
-    
+    // Fall 2: Sirene erkannt
     if (match.matched) {
+        lastDetectionTime = now;
+        lastDetectedFrequency = frequency;
+        lastSimilarity = match.similarity;
+        isHolding = false;
+        
+        frequencyValue.textContent = Math.round(frequency);
         detectionStatus.textContent = `✓ SIRENE (${match.similarity.toFixed(0)}%)`;
         detectionStatus.className = 'detection-status detected';
         log(`MATCH! ${Math.round(frequency)} Hz | Ähnlichkeit: ${match.similarity.toFixed(1)}%`);
+        return;
+    }
+    
+    // Fall 3: Nicht erkannt, aber Signal vorhanden
+    const timeSinceLastDetection = now - lastDetectionTime;
+    
+    if (lastDetectionTime > 0 && timeSinceLastDetection < CONFIG.holdTime) {
+        // Hold-Modus: Letzten Wert beibehalten
+        isHolding = true;
+        frequencyValue.textContent = Math.round(lastDetectedFrequency);
+        detectionStatus.textContent = `⏸ HOLD (${Math.round(lastSimilarity)}%)`;
+        detectionStatus.className = 'detection-status detected';
     } else {
+        // Hold-Zeit abgelaufen oder nie erkannt
+        isHolding = false;
+        lastDetectionTime = 0;
+        frequencyValue.textContent = Math.round(frequency);
         detectionStatus.textContent = `✗ Nicht erkannt (${match.similarity.toFixed(0)}%)`;
         detectionStatus.className = 'detection-status not-detected';
     }
