@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>SPUMAX Sirenen-Erkennung Test</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>SIRENEN-TEST</h1>
+            <p class="subtitle">Frequenzerkennung für SPUMAX</p>
+        </header>
+
+        <!-- Status -->
+        <div class="status-box" id="statusBox">
+            <div class="status-indicator" id="statusIndicator"></div>
+            <span id="statusText">Mikrofon aus</span>
+        </div>
+
+        <!-- Hauptanzeige -->
+        <div class="main-display">
+            <div class="frequency-display">
+                <span class="frequency-value" id="frequencyValue">---</span>
+                <span class="frequency-unit">Hz</span>
+            </div>
+            <div class="detection-status" id="detectionStatus">
+                Keine Erkennung
+            </div>
+        </div>
+
+        <!-- Spektrum-Visualisierung -->
+        <div class="spectrum-container">
+            <canvas id="spectrumCanvas" width="300" height="150"></canvas>
+            <div class="spectrum-labels">
+                <span>0 Hz</span>
+                <span>1500 Hz</span>
+                <span>3000 Hz</span>
+            </div>
+        </div>
+
+        <!-- Gelernte Signatur -->
+        <div class="signature-box" id="signatureBox">
+            <h3>Gelernte Signatur</h3>
+            <div class="signature-status" id="signatureStatus">Keine Signatur</div>
+            <canvas id="signatureCanvas" width="280" height="80"></canvas>
+        </div>
+
+        <!-- Steuerung -->
+        <div class="controls">
+            <button id="startBtn" class="btn btn-primary">
+                <span class="btn-icon">🎤</span>
+                START
+            </button>
+            
+            <button id="learnBtn" class="btn btn-learn" disabled>
+                <span class="btn-icon">📚</span>
+                LERNEN
+            </button>
+        </div>
+
+        <!-- Einstellungen -->
+        <div class="settings">
+            <div class="setting-row">
+                <label>Toleranz</label>
+                <div class="setting-control">
+                    <button class="btn-small" id="tolMinus">−</button>
+                    <span id="toleranceValue">50</span>%
+                    <button class="btn-small" id="tolPlus">+</button>
+                </div>
+            </div>
+            <div class="setting-row">
+                <label>Min. Magnitude</label>
+                <div class="setting-control">
+                    <button class="btn-small" id="magMinus">−</button>
+                    <span id="magnitudeValue">10</span>
+                    <button class="btn-small" id="magPlus">+</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Debug-Info -->
+        <div class="debug-info">
+            <div id="debugText">Bereit</div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
+
