@@ -1,5 +1,6 @@
 // ========================================
 // SPUMAX Sirenen-Erkennung Testprojekt
+// Version 2: Oberton-Analyse
 // ========================================
 
 // Konfiguration
@@ -10,6 +11,7 @@ const CONFIG = {
     maxFrequency: 3000,   // bis 3000 Hz
     learnDuration: 5000,  // 5 Sekunden lernen
     smoothingFactor: 0.8, // Spektrum-Glättung
+    numHarmonics: 5,      // Anzahl Obertöne zu analysieren (1., 2., 3., 4., 5.)
 };
 
 // State
@@ -18,7 +20,7 @@ let analyser = null;
 let microphone = null;
 let isRunning = false;
 let isLearning = false;
-let learnedSignature = null;
+let learnedSignature = null;  // { harmonicRatios: [1, 0.5, 0.3, ...], sampleCount: N }
 let tolerance = 50;       // 50% Toleranz
 let minMagnitude = 10;    // Mindest-Magnitude
 let animationId = null;
@@ -128,28 +130,32 @@ function processAudio() {
     const frequencyData = new Float32Array(bufferLength);
     analyser.getFloatFrequencyData(frequencyData);
     
-    // Konvertiere dB zu linearer Skala (0-1)
+    // Konvertiere dB zu linearer Skala (0-100)
     const spectrum = convertToLinear(frequencyData);
     
-    // Finde dominante Frequenz im Sirenen-Bereich
-    const { frequency, magnitude, binIndex } = findDominantFrequency(spectrum);
+    // Finde Grundfrequenz (lautester Peak im Bereich)
+    const { frequency: fundamentalFreq, magnitude, binIndex } = findFundamental(spectrum);
     
-    // Zeichne Spektrum
-    drawSpectrum(spectrum, binIndex);
+    // Analysiere Obertöne
+    const harmonics = analyzeHarmonics(spectrum, fundamentalFreq);
+    
+    // Zeichne Spektrum mit Oberton-Markierungen
+    drawSpectrum(spectrum, fundamentalFreq, harmonics);
     
     // Lernen oder Erkennen
     if (isLearning) {
-        collectLearningData(spectrum, frequency, magnitude);
+        collectLearningData(harmonics, fundamentalFreq, magnitude);
     } else if (learnedSignature) {
-        // Erkenne Sirene
-        const match = matchSignature(spectrum, magnitude);
-        updateDetection(frequency, magnitude, match);
+        // Erkenne Sirene anhand Oberton-Verhältnisse
+        const match = matchHarmonics(harmonics, magnitude);
+        updateDetection(fundamentalFreq, magnitude, match, harmonics);
     } else {
-        // Keine Signatur - zeige nur Frequenz
+        // Keine Signatur - zeige nur Frequenz und Obertöne
         if (magnitude > minMagnitude) {
-            frequencyValue.textContent = Math.round(frequency);
+            frequencyValue.textContent = Math.round(fundamentalFreq);
             detectionStatus.textContent = 'Keine Signatur gelernt';
             detectionStatus.className = 'detection-status';
+            log(`F0: ${Math.round(fundamentalFreq)} Hz | Obertöne: ${harmonics.ratios.map(r => r.toFixed(2)).join(', ')}`);
         } else {
             frequencyValue.textContent = '---';
             detectionStatus.textContent = 'Signal zu schwach';
@@ -164,15 +170,15 @@ function processAudio() {
 function convertToLinear(dbData) {
     const linear = new Float32Array(dbData.length);
     for (let i = 0; i < dbData.length; i++) {
-        // dB zu linear: 10^(dB/20), normalisiert auf 0-100
+        // dB zu linear: normalisiert auf 0-100
         const db = dbData[i];
         linear[i] = Math.max(0, Math.pow(10, (db + 100) / 40) * 10);
     }
     return linear;
 }
 
-// Finde dominante Frequenz im Bereich
-function findDominantFrequency(spectrum) {
+// Finde Grundfrequenz (stärkster Peak im Bereich)
+function findFundamental(spectrum) {
     const binSize = CONFIG.sampleRate / CONFIG.fftSize;
     const minBin = Math.floor(CONFIG.minFrequency / binSize);
     const maxBin = Math.ceil(CONFIG.maxFrequency / binSize);
@@ -207,6 +213,48 @@ function findDominantFrequency(spectrum) {
 }
 
 // ========================================
+// Oberton-Analyse (Kernfunktion!)
+// ========================================
+
+function analyzeHarmonics(spectrum, fundamentalFreq) {
+    const binSize = CONFIG.sampleRate / CONFIG.fftSize;
+    const fundamentalBin = Math.round(fundamentalFreq / binSize);
+    const fundamentalMag = spectrum[fundamentalBin] || 1;
+    
+    // Sammle Oberton-Stärken
+    const harmonicMagnitudes = [fundamentalMag]; // Index 0 = Grundton
+    const harmonicFreqs = [fundamentalFreq];
+    
+    for (let h = 2; h <= CONFIG.numHarmonics + 1; h++) {
+        const harmonicFreq = fundamentalFreq * h;
+        const harmonicBin = Math.round(harmonicFreq / binSize);
+        
+        // Suche Peak in Umgebung (±3 Bins für Ungenauigkeiten)
+        let maxMag = 0;
+        let peakBin = harmonicBin;
+        for (let offset = -3; offset <= 3; offset++) {
+            const bin = harmonicBin + offset;
+            if (bin >= 0 && bin < spectrum.length && spectrum[bin] > maxMag) {
+                maxMag = spectrum[bin];
+                peakBin = bin;
+            }
+        }
+        
+        harmonicMagnitudes.push(maxMag);
+        harmonicFreqs.push(peakBin * binSize);
+    }
+    
+    // Berechne Verhältnisse relativ zum Grundton
+    const ratios = harmonicMagnitudes.map(m => m / fundamentalMag);
+    
+    return {
+        magnitudes: harmonicMagnitudes,
+        frequencies: harmonicFreqs,
+        ratios: ratios  // [1.0, ratio2, ratio3, ratio4, ...]
+    };
+}
+
+// ========================================
 // Signatur Lernen
 // ========================================
 
@@ -227,28 +275,21 @@ function startLearning() {
     updateLearningProgress();
 }
 
-function collectLearningData(spectrum, frequency, magnitude) {
+function collectLearningData(harmonics, frequency, magnitude) {
     const elapsed = Date.now() - learningStartTime;
     
-    // Nur starke Signale sammeln
-    if (magnitude > minMagnitude) {
-        // Extrahiere relevanten Bereich des Spektrums
-        const binSize = CONFIG.sampleRate / CONFIG.fftSize;
-        const minBin = Math.floor(CONFIG.minFrequency / binSize);
-        const maxBin = Math.ceil(CONFIG.maxFrequency / binSize);
-        
-        const relevantSpectrum = Array.from(spectrum.slice(minBin, maxBin));
+    // Nur starke Signale im gültigen Frequenzbereich sammeln
+    if (magnitude > minMagnitude && 
+        frequency >= CONFIG.minFrequency && 
+        frequency <= CONFIG.maxFrequency) {
         
         learningData.push({
-            spectrum: relevantSpectrum,
+            ratios: [...harmonics.ratios],
             frequency: frequency,
             magnitude: magnitude,
             time: elapsed
         });
     }
-    
-    // Fortschritt aktualisieren
-    const progress = Math.min(100, (elapsed / CONFIG.learnDuration) * 100);
     
     // Nach 5 Sekunden beenden
     if (elapsed >= CONFIG.learnDuration) {
@@ -279,42 +320,38 @@ function finishLearning() {
     
     if (learningData.length < 10) {
         log('Zu wenige Samples (' + learningData.length + ') - bitte erneut versuchen');
-        signatureStatus.textContent = 'Lernen fehlgeschlagen';
+        signatureStatus.textContent = 'Lernen fehlgeschlagen (zu wenig Signal)';
         signatureStatus.className = 'signature-status';
         return;
     }
     
-    // Berechne durchschnittliches Spektrum
-    const avgSpectrum = calculateAverageSpectrum(learningData);
-    
-    // Normalisiere auf 0-1
-    const maxVal = Math.max(...avgSpectrum);
-    const normalizedSpectrum = avgSpectrum.map(v => v / maxVal);
+    // Berechne durchschnittliche Oberton-Verhältnisse
+    const avgRatios = calculateAverageRatios(learningData);
     
     learnedSignature = {
-        spectrum: normalizedSpectrum,
+        harmonicRatios: avgRatios,
         sampleCount: learningData.length,
         timestamp: Date.now()
     };
     
-    // Zeichne Signatur
-    drawSignature(normalizedSpectrum);
+    // Zeichne Signatur (Oberton-Verhältnisse als Balken)
+    drawSignature(avgRatios);
     
     signatureStatus.textContent = `✓ Signatur gelernt (${learningData.length} Samples)`;
     signatureStatus.className = 'signature-status active';
     
-    log('Signatur gelernt: ' + learningData.length + ' Samples');
+    log('Oberton-Verhältnisse: ' + avgRatios.map(r => r.toFixed(2)).join(', '));
 }
 
-function calculateAverageSpectrum(data) {
+function calculateAverageRatios(data) {
     if (data.length === 0) return [];
     
-    const length = data[0].spectrum.length;
-    const sum = new Array(length).fill(0);
+    const numHarmonics = data[0].ratios.length;
+    const sum = new Array(numHarmonics).fill(0);
     
     for (const sample of data) {
-        for (let i = 0; i < length; i++) {
-            sum[i] += sample.spectrum[i];
+        for (let i = 0; i < numHarmonics; i++) {
+            sum[i] += sample.ratios[i];
         }
     }
     
@@ -322,73 +359,56 @@ function calculateAverageSpectrum(data) {
 }
 
 // ========================================
-// Signatur Matching
+// Signatur Matching (Oberton-Vergleich)
 // ========================================
 
-function matchSignature(currentSpectrum, magnitude) {
+function matchHarmonics(currentHarmonics, magnitude) {
     if (!learnedSignature || magnitude < minMagnitude) {
-        return { matched: false, correlation: 0 };
+        return { matched: false, similarity: 0, details: 'Signal zu schwach' };
     }
     
-    // Extrahiere relevanten Bereich
-    const binSize = CONFIG.sampleRate / CONFIG.fftSize;
-    const minBin = Math.floor(CONFIG.minFrequency / binSize);
-    const maxBin = Math.ceil(CONFIG.maxFrequency / binSize);
+    const currentRatios = currentHarmonics.ratios;
+    const learnedRatios = learnedSignature.harmonicRatios;
     
-    const currentRelevant = Array.from(currentSpectrum.slice(minBin, maxBin));
+    // Berechne Ähnlichkeit der Oberton-Verhältnisse
+    // Wir vergleichen ab Index 1 (Obertöne), Index 0 ist immer 1.0 (Grundton)
+    let totalDiff = 0;
+    let comparisons = 0;
+    const diffs = [];
     
-    // Normalisiere aktuelles Spektrum
-    const maxVal = Math.max(...currentRelevant);
-    if (maxVal === 0) return { matched: false, correlation: 0 };
+    for (let i = 1; i < Math.min(currentRatios.length, learnedRatios.length); i++) {
+        const learned = learnedRatios[i];
+        const current = currentRatios[i];
+        
+        // Relative Differenz
+        const diff = Math.abs(learned - current) / Math.max(learned, 0.1);
+        diffs.push(diff);
+        totalDiff += diff;
+        comparisons++;
+    }
     
-    const normalizedCurrent = currentRelevant.map(v => v / maxVal);
+    // Durchschnittliche Abweichung
+    const avgDiff = comparisons > 0 ? totalDiff / comparisons : 1;
     
-    // Berechne Korrelation
-    const correlation = calculateCorrelation(
-        normalizedCurrent, 
-        learnedSignature.spectrum
-    );
+    // Ähnlichkeit: 0% = komplett anders, 100% = identisch
+    const similarity = Math.max(0, 1 - avgDiff) * 100;
     
     // Schwellwert basierend auf Toleranz
-    const threshold = 1 - (tolerance / 100);
-    const matched = correlation >= threshold;
+    const threshold = 100 - tolerance;
+    const matched = similarity >= threshold;
     
-    return { matched, correlation };
-}
-
-function calculateCorrelation(a, b) {
-    if (a.length !== b.length) {
-        // Bei unterschiedlicher Länge: kürzeres Array verwenden
-        const minLen = Math.min(a.length, b.length);
-        a = a.slice(0, minLen);
-        b = b.slice(0, minLen);
-    }
-    
-    // Pearson Korrelation
-    const n = a.length;
-    let sumA = 0, sumB = 0, sumAB = 0, sumA2 = 0, sumB2 = 0;
-    
-    for (let i = 0; i < n; i++) {
-        sumA += a[i];
-        sumB += b[i];
-        sumAB += a[i] * b[i];
-        sumA2 += a[i] * a[i];
-        sumB2 += b[i] * b[i];
-    }
-    
-    const numerator = n * sumAB - sumA * sumB;
-    const denominator = Math.sqrt((n * sumA2 - sumA * sumA) * (n * sumB2 - sumB * sumB));
-    
-    if (denominator === 0) return 0;
-    
-    return Math.max(0, numerator / denominator);
+    return { 
+        matched, 
+        similarity,
+        details: `Obertöne: ${diffs.map(d => (d * 100).toFixed(0) + '%').join(', ')}`
+    };
 }
 
 // ========================================
 // UI Updates
 // ========================================
 
-function updateDetection(frequency, magnitude, match) {
+function updateDetection(frequency, magnitude, match, harmonics) {
     if (magnitude < minMagnitude) {
         frequencyValue.textContent = '---';
         detectionStatus.textContent = 'Signal zu schwach';
@@ -399,10 +419,11 @@ function updateDetection(frequency, magnitude, match) {
     frequencyValue.textContent = Math.round(frequency);
     
     if (match.matched) {
-        detectionStatus.textContent = `✓ SIRENE (${(match.correlation * 100).toFixed(0)}%)`;
+        detectionStatus.textContent = `✓ SIRENE (${match.similarity.toFixed(0)}%)`;
         detectionStatus.className = 'detection-status detected';
+        log(`MATCH! ${Math.round(frequency)} Hz | Ähnlichkeit: ${match.similarity.toFixed(1)}%`);
     } else {
-        detectionStatus.textContent = `✗ Nicht erkannt (${(match.correlation * 100).toFixed(0)}%)`;
+        detectionStatus.textContent = `✗ Nicht erkannt (${match.similarity.toFixed(0)}%)`;
         detectionStatus.className = 'detection-status not-detected';
     }
 }
@@ -422,7 +443,7 @@ function log(message) {
 // Canvas Drawing
 // ========================================
 
-function drawSpectrum(spectrum, peakBin) {
+function drawSpectrum(spectrum, fundamentalFreq, harmonics) {
     const width = spectrumCanvas.width;
     const height = spectrumCanvas.height;
     
@@ -436,6 +457,9 @@ function drawSpectrum(spectrum, peakBin) {
     
     const barWidth = width / numBins;
     
+    // Berechne Oberton-Positionen
+    const harmonicBins = harmonics.frequencies.map(f => Math.round(f / binSize));
+    
     for (let i = 0; i < numBins; i++) {
         const bin = minBin + i;
         const value = spectrum[bin] || 0;
@@ -444,16 +468,38 @@ function drawSpectrum(spectrum, peakBin) {
         const x = i * barWidth;
         const y = height - barHeight;
         
-        // Farbe: rot für Peak, grün für Match-Bereich
-        if (bin === peakBin) {
-            spectrumCtx.fillStyle = '#ff4444';
-        } else if (learnedSignature && value > minMagnitude) {
-            spectrumCtx.fillStyle = '#44ff44';
+        // Farbe: Gelb für Grundton, Cyan für Obertöne, Grau sonst
+        const fundamentalBin = Math.round(fundamentalFreq / binSize);
+        
+        if (Math.abs(bin - fundamentalBin) <= 1) {
+            // Grundton
+            spectrumCtx.fillStyle = '#ffcc00';
+        } else if (harmonicBins.slice(1).some(hb => Math.abs(bin - hb) <= 1)) {
+            // Oberton
+            spectrumCtx.fillStyle = '#00ccff';
         } else {
-            spectrumCtx.fillStyle = '#666';
+            spectrumCtx.fillStyle = '#444';
         }
         
         spectrumCtx.fillRect(x, y, barWidth - 1, barHeight);
+    }
+    
+    // Beschriftung für Obertöne
+    spectrumCtx.fillStyle = '#888';
+    spectrumCtx.font = '10px sans-serif';
+    
+    const f0Bin = Math.round(fundamentalFreq / binSize);
+    const f0X = (f0Bin - minBin) * barWidth;
+    if (f0X > 0 && f0X < width - 20) {
+        spectrumCtx.fillText('F0', f0X, 12);
+    }
+    
+    for (let h = 2; h <= CONFIG.numHarmonics + 1; h++) {
+        const hBin = Math.round((fundamentalFreq * h) / binSize);
+        const hX = (hBin - minBin) * barWidth;
+        if (hX > 0 && hX < width - 20) {
+            spectrumCtx.fillText(`${h}x`, hX, 12);
+        }
     }
     
     // Schwellwert-Linie
@@ -467,27 +513,40 @@ function drawSpectrum(spectrum, peakBin) {
     spectrumCtx.setLineDash([]);
 }
 
-function drawSignature(spectrum) {
+function drawSignature(ratios) {
     const width = signatureCanvas.width;
     const height = signatureCanvas.height;
     
     signatureCtx.fillStyle = 'rgba(0, 0, 0, 0.3)';
     signatureCtx.fillRect(0, 0, width, height);
     
-    if (!spectrum || spectrum.length === 0) return;
+    if (!ratios || ratios.length === 0) return;
     
-    const barWidth = width / spectrum.length;
+    const barWidth = (width - 40) / ratios.length;
+    const maxRatio = Math.max(...ratios);
     
-    for (let i = 0; i < spectrum.length; i++) {
-        const value = spectrum[i];
-        const barHeight = value * height * 0.9;
+    // Beschriftung
+    signatureCtx.fillStyle = '#666';
+    signatureCtx.font = '10px sans-serif';
+    
+    for (let i = 0; i < ratios.length; i++) {
+        const value = ratios[i] / maxRatio;
+        const barHeight = value * (height - 25);
         
-        const x = i * barWidth;
-        const y = height - barHeight;
+        const x = 20 + i * barWidth;
+        const y = height - 15 - barHeight;
         
-        spectrumCtx.fillStyle = '#44ff44';
-        signatureCtx.fillStyle = `rgba(68, 255, 68, ${0.3 + value * 0.7})`;
-        signatureCtx.fillRect(x, y, barWidth - 1, barHeight);
+        // Farbe: Gelb für Grundton, Cyan für Obertöne
+        signatureCtx.fillStyle = i === 0 ? '#ffcc00' : '#00ccff';
+        signatureCtx.fillRect(x, y, barWidth - 4, barHeight);
+        
+        // Beschriftung
+        signatureCtx.fillStyle = '#888';
+        const label = i === 0 ? 'F0' : `${i + 1}x`;
+        signatureCtx.fillText(label, x + 2, height - 3);
+        
+        // Prozentwert
+        signatureCtx.fillText((ratios[i] * 100).toFixed(0) + '%', x + 2, y - 3);
     }
 }
 
@@ -558,5 +617,4 @@ resizeCanvases();
 clearCanvas(spectrumCtx, spectrumCanvas);
 clearCanvas(signatureCtx, signatureCanvas);
 
-log('Bereit - START drücken um zu beginnen');
-
+log('v2: Oberton-Analyse - START drücken');
