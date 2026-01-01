@@ -9,7 +9,7 @@
 <body>
     <div class="container">
         <header>
-            <h1>SIRENEN-TEST</h1>
+            <h1>SIRENENSTIMME</h1>
         </header>
 
         <!-- Status (versteckt) -->
@@ -29,8 +29,8 @@
             </div>
         </div>
 
-        <!-- Spektrum-Visualisierung -->
-        <div class="spectrum-container">
+        <!-- Spektrum-Visualisierung (versteckt) -->
+        <div class="spectrum-container" style="display:none">
             <canvas id="spectrumCanvas" width="300" height="150"></canvas>
             <div class="spectrum-labels">
                 <span>0 Hz</span>
@@ -50,12 +50,12 @@
         <div class="controls">
             <button id="startBtn" class="btn btn-primary">
                 <span class="btn-icon">🎤</span>
-                START
+                LAUSCHEN
             </button>
             
             <button id="learnBtn" class="btn btn-learn" disabled>
-                <span class="btn-icon">📚</span>
-                LERNEN
+                <span class="btn-icon">✓</span>
+                ÜBERNEHMEN
             </button>
         </div>
 
